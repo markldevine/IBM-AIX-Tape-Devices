@@ -1,0 +1,419 @@
+#!/usr/bin/env raku
+
+#use lib '/home/mdevine/github.com/raku-Our-Utilities/lib';
+#use lib '/home/mdevine/github.com/raku-Our-Grid/lib';
+#use lib '/home/mdevine/github.com/raku-Our-Redis/lib';
+
+use Async::Command::Multi;
+use Our::Cache;
+use Getopt::Long;
+use Our::Grid;
+use Our::Grid::Cell;
+use JSON::Fast;
+use Our::Utilities;
+
+use Data::Dump::Tree;
+#use Grammar::Debugger;
+
+my %HMC;
+my %vios-results;
+my %client-results;
+
+my class FCS {
+    has Str $.physical-location;
+    has Str $.world-wide-node-name;
+    has Str $.world-wide-port-name;
+}
+
+my class NPIV {
+    has Str $.server-vadapter-location;
+    has Int $.lpar-id;
+    has Str $.lpar-name;
+    has Str $.operating-system;
+    has Str $.status;
+    has Str $.vio-padapter-name;
+    has Str $.vio-padapter-location;
+    has Int $.ports-logged-in;
+    has Str $.hex-flags;
+    has Str $.client-fcs-device;
+    has Str $.client-vadapter-location;
+}
+
+my class LSPPARTITIONDLPAR {
+    has Int     $.partition-number;
+    has Str     $.model;
+    has Str     $.type;
+    has Str     $.serial-number;
+    has Str     $.ip-address;
+    has Bool    $.active;
+    has Str     $.os-name;
+    has Str     $.os-vr;
+    has Str     $.os-level;
+}
+
+
+my grammar LSPPARTITIONDLPAR-grammar {
+    token TOP {
+        ^
+        <dlpar-record>+
+    }
+    token dlpar-record {
+        ^^
+        <record-number-field>
+        \s+
+        <partition-field>
+        $$ \n
+        ^^ \s+
+        <active-field>
+        <os-field>
+        .+?
+        $$ \n
+    }
+    token record-number-field   { '<#' <record-number> '>'          }
+    token record-number         { \d+                               }
+    token partition-field       {
+                                    Partition ':<'
+                                    <partition-number>
+                                    '*'
+                                    <model-type>
+                                    '*'
+                                    <serial-number>
+                                    ',' \s+
+                                    <ip-label>*
+                                    ',' \s+
+                                    <ip-address>
+                                    '>'
+                                }
+    token partition-number      { \d+                               }
+    token model-type            { <model> '-' <type>                }
+    token model                 { \w ** 4                           }
+    token type                  { \w ** 3                           }
+    token serial-number         { \w ** 7                           }
+    token ip-label              { <-[,]>+                           }
+    token ip-address            { <ip-address-octet> ** 4 %% '.'    }
+    token ip-address-octet      { \d ** 1..3                        }
+    token active-field          { Active ':<' <active> '>,' \s+     }
+    token active                { \d                                }
+    token os-field              {
+                                    OS ':<'
+                                    <os-name>
+                                    ',' \s+
+                                    <os-vr>
+                                    ',' \s+
+                                    <os-level>
+                                    '>'
+                                }
+
+#   OS:<, , >,
+
+    token os-name               { <-[,]>*                           }
+    token os-vr                 { <-[,]>*                           }
+    token os-level              { <-[\>]>*                          }
+}
+
+class LSPPARTITIONDLPAR-actions {
+    has $.hmc is required;
+
+    method dlpar-record ($/) {
+        my Int $partition-number    = +$/<partition-field><partition-number>;
+        %HMC{$!hmc}<LSPPARTITIONDLPAR>{$partition-number} = LSPPARTITIONDLPAR.new:
+            :$partition-number,
+            :model(~$/<partition-field><model-type><model>),
+            :type(~$/<partition-field><model-type><type>),
+            :serial-number(~$/<partition-field><serial-number>),
+            :ip-address(~$/<partition-field><ip-address>),
+            :active(?$/<active-field><active>),
+            :os-name(~$/<os-field><os-name>),
+            :os-vr(~$/<os-field><os-vr>),
+            :os-level(~$/<os-field><os-level>),
+        ;
+
+    }
+}
+
+grammar FCS-grammar {
+    token TOP {
+        ^
+        <fcs-record>+
+    }
+    token fcs-record {
+        \s+ <fcs-device> \s+  
+        .+?
+        Network \s Address '.'+ <network-address>
+        .+?
+        Device \s Specific.\(Z8\) '.'+ <Z8>
+        .+?
+        Hardware \s Location \s Code '.'+ <hardware-location>
+        .+?
+    }
+    token fcs-device        { fcs <fcs-number>                      }
+    token fcs-number        { \d+                                   }
+    token network-address   { <[0..9A..F]> ** 16                    }
+    token Z8                { <[0..9A..F]> ** 16                    }
+    token hardware-location { \w+ '.' \w+ '.' <[0..9A..F]>+ .+? $$  }
+}
+
+class FCS-vio-actions {
+    has $.vio-server    is required;
+
+    method fcs-record ($/) {
+        my Int $fcs-number = +$/<fcs-device><fcs-number>;
+        %vios-results{$!vio-server}[$fcs-number]   = 
+            FCS.new:
+                :physical-location(~$/<hardware-location>),
+                :world-wide-node-name(~$/<Z8>),
+                :world-wide-port-name(~$/<network-address>),
+            ;
+    }
+}
+
+class FCS-client-actions {
+    has $.partition-number  is required;
+
+    method fcs-record ($/) {
+        my Int $fcs-number = +$/<fcs-device><fcs-number>;
+        %client-results{$!partition-number}[$fcs-number]   = 
+            FCS.new:
+                :physical-location(~$/<hardware-location>),
+                :world-wide-node-name(~$/<Z8>),
+                :world-wide-port-name(~$/<network-address>),
+            ;
+    }
+}
+
+sub MAIN (
+    Str                 :$hmc!,                                 #= HMC to query
+    Str                 :$model-type,                           #= restrict managed systems to only M-T
+    Bool                :$group-by-vios,                        #= group data around vio servers
+    Bool                :$csv,                                  #= dump CSV to STDOUT
+    Str                 :$grid-proxy-host   = '127.0.0.1',      #= hostname of grid proxy for remote services
+    Bool                :$gui,                                  #= Graphical User Interface
+    Bool                :$html,                                 #= dump HTML to STDOUT
+    Bool                :$json,                                 #= dump JSON to STDOUT
+#   Grid-Email-Formats  :$mail-body-format,                     #= email body format
+                        :$mail-body-format,                     #= email body format
+                        :$mail-from,                            #= email 'From:' addressee
+                        :@mail-to,                              #= accumulate email 'To:' addressees
+                        :@mail-cc,                              #= accumulate email 'Cc:' addressees
+                        :@mail-bcc,                             #= accumulate email 'Bcc:' addressees
+    Bool                :$text,                                 #= TEXT print
+    Bool                :$tui,                                  #= Terminal User Interface
+    Bool                :$xml,                                  #= dump XML to STDOUT
+    Bool                :$light-mode,                           #= reverse header highlight for light-mode
+) {
+    my Bool $mailing;
+    my $from                = $mail-from;
+    my $format              = $mail-body-format;
+    if $mail-from && @mail-to.elems {
+        die '--mail-from=<email-address> required to send mail!' unless $mail-from;
+        die '--mail-to=<email-address[,email-address]> required to send mail!' unless @mail-to.elems;
+        $from               = $mail-from[0] if $mail-from ~~ Array;
+        $format             = $mail-body-format[0] if $mail-body-format ~~ Array;
+        $mailing = True;
+    }
+    my $reverse-highlight   = $light-mode ?? True !! False;
+    my $identifier          = 'preferences';
+    my $preferences-cache   = Our::Cache.new(:$identifier);
+    my $preferences         = from-json($preferences-cache.fetch) if $preferences-cache.cache-hit;
+    without $light-mode {
+        $reverse-highlight  = $preferences<light-mode> if $preferences<light-mode>:exists;
+    }
+    $preferences-cache.store(:data(to-json({light-mode => $reverse-highlight})));
+    my %command;
+    %command{$hmc}          = ['ssh', $hmc, 'lssyscfg', '-r', 'sys', '-F', 'name'];
+    my $command-manager     = Async::Command::Multi.new(:%command, :20time-out, :8batch);
+    my %results             = $command-manager.sow.reap;
+    for %results.keys.sort(*.split(/\d+/, :kv).map({ (try .Numeric) // $_}).List) -> $hmc-server {
+        for %results{$hmc-server}.stdout-results.trim.split("\n").list -> $managed-server {
+            next unless $managed-server ~~ /9080 '-' HEX/;
+            %HMC{$hmc-server}<managed-servers>{$managed-server} = {};
+        }
+        die "No managed servers found on HMC '$hmc-server'!" unless %HMC{$hmc}.elems;
+    }
+
+    %command                = ();
+    %command{$hmc}          = ['ssh', $hmc, 'lspartition', '-dlpar'];
+    $command-manager        = Async::Command::Multi.new(:%command, :20time-out, :8batch);
+    %results                = $command-manager.sow.reap;
+    LSPPARTITIONDLPAR-grammar.parse(%results{$hmc}.stdout-results, :actions(LSPPARTITIONDLPAR-actions.new(:$hmc))) || die;
+
+    %command                = ();
+    for %HMC{$hmc}<LSPPARTITIONDLPAR>.keys -> $partition-number {
+        next if $model-type && %HMC{$hmc}<LSPPARTITIONDLPAR>{$partition-number}.model ~ '-' ~ %HMC{$hmc}<LSPPARTITIONDLPAR>{$partition-number}.type ne $model-type;
+        %command{$partition-number} = [
+            'ssh',
+            %HMC{$hmc}<LSPPARTITIONDLPAR>{$partition-number}.ip-address,
+            '-o', 'BatchMode=yes',
+            '-o', 'PreferredAuthentications=publickey',
+            'lscfg',
+            '-vl',
+            'fcs*',
+        ];
+    }
+
+    my $deferred-command-manager = Async::Command::Multi.new(:%command, :10time-out, :8batch).sow;
+
+
+    %command                = ();
+    for %HMC{$hmc}<managed-servers>.keys.sort(*.split(/\d+/, :kv).map({ (try .Numeric) // $_}).List) -> $managed-server {
+        %command{$managed-server} = ['ssh', $hmc, 'lssyscfg', '-m', $managed-server, '-r', 'lpar', '-F', 'lpar_id,name'];
+    }
+    $command-manager        = Async::Command::Multi.new(:%command, :20time-out, :8batch);
+    %results                = $command-manager.sow.reap;
+    for %results.keys.sort(*.split(/\d+/, :kv).map({ (try .Numeric) // $_}).List) -> $managed-server {
+        for %results{$managed-server}.stdout-results.trim.split("\n").list -> $record {
+            my ($lpar-id, $name) = $record.split: ',';
+            %HMC{$hmc}<managed-servers>{$managed-server}<id2name>{$lpar-id}  = $name;
+            %HMC{$hmc}<managed-servers>{$managed-server}<name2id>{$name}     = $lpar-id;
+        }
+    }
+
+    for %HMC{$hmc}<managed-servers>.keys.sort(*.split(/\d+/, :kv).map({ (try .Numeric) // $_}).List) -> $managed-server {
+        for %HMC{$hmc}<managed-servers>{$managed-server}<name2id>.keys -> $name {
+            %HMC{$hmc}<managed-servers>{$managed-server}<vios>{$name} = {} if $name ~~ /vio/;
+        }
+    }
+
+    %command                = ();
+    for %HMC{$hmc}<managed-servers>.keys.sort(*.split(/\d+/, :kv).map({ (try .Numeric) // $_}).List) -> $managed-server {
+        for %HMC{$hmc}<managed-servers>{$managed-server}<vios>.keys.sort(*.split(/\d+/, :kv).map({ (try .Numeric) // $_}).List) -> $vio {
+            %command{$vio}      = ['ssh', 'padmin@' ~ $vio, 'ioscli', 'lsdev', '-dev', 'fcs*', '-vpd'];
+        }
+        $command-manager        = Async::Command::Multi.new(:%command, :20time-out, :8batch);
+        %results                = $command-manager.sow.reap;
+        for %results.keys.sort(*.split(/\d+/, :kv).map({ (try .Numeric) // $_}).List) -> $vio-server {
+            FCS-grammar.parse(%results{$vio-server}.stdout-results, :actions(FCS-vio-actions.new(:$vio-server)));
+            die 'No fcs adapters found!' unless %vios-results{$vio-server}.elems;
+            %HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio-server}<fcs> = %vios-results{$vio-server};
+        }
+    }
+
+    %command                = ();
+    for %HMC{$hmc}<managed-servers>.keys.sort(*.split(/\d+/, :kv).map({ (try .Numeric) // $_}).List) -> $managed-server {
+        for %HMC{$hmc}<managed-servers>{$managed-server}<vios>.keys -> $vio {
+            %command{$vio}      = ['ssh', 'padmin@' ~ $vio, 'ioscli', 'lsmap', '-npiv', '-all', '-fmt', ':'];
+        }
+        $command-manager        = Async::Command::Multi.new(:%command, :20time-out, :8batch);
+        %results                = $command-manager.sow.reap;
+        for %results.keys.sort(*.split(/\d+/, :kv).map({ (try .Numeric) // $_}).List) -> $vio-server {
+            for %results{$vio-server}.stdout-results.trim.split("\n").list -> $record {
+                my @fields      = $record.split(':');
+                %HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio-server}<npiv>{@fields[0]} = NPIV.new:
+                    :server-vadapter-location(@fields[1]),
+                    :lpar-id(@fields[2].Int),
+                    :lpar-name(@fields[3] ?? @fields[3] !! ''),
+                    :operating-system(@fields[4]),
+                    :status(@fields[5]),
+                    :vio-padapter-name(@fields[6]),
+                    :vio-padapter-location(@fields[7]),
+                    :ports-logged-in(@fields[8].Int),
+                    :hex-flags(@fields[9]),
+                    :client-fcs-device(@fields[10]),
+                    :client-vadapter-location(@fields[11]),
+                ;
+                %HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio-server}<viopadaptername2vfchost>{@fields[6]}.push: @fields[0];
+            }
+        }
+    }
+    my Our::Grid $grid;
+    if $group-by-vios {
+        $grid  .= new: :title('NPIV Summary'), :$grid-proxy-host, :$reverse-highlight, :0group-by-column;
+    }
+    else {
+        $grid  .= new: :title('NPIV Summary'), :$grid-proxy-host, :$reverse-highlight;
+    }
+#   $grid.add-heading('Managed Server',     :justification<left>),
+    $grid.add-heading('VIO Server',         :justification<left>);
+    $grid.add-heading('Physical Adapter',   :justification<left>);
+    $grid.add-heading('Physical Location',  :justification<left>);
+    $grid.add-heading('WW Node Name',       :justification<right>);
+    $grid.add-heading('WW Port Name',       :justification<right>);
+    $grid.add-heading('LPAR',               :justification<left>);
+    $grid.add-heading('vfchost',            :justification<left>);
+    $grid.add-heading('LPAR Adapter',       :justification<center>);
+    $grid.add-heading('LPAR Location',      :justification<left>);
+    $grid.add-heading('LPAR WW Node Name',  :justification<right>);
+
+#   reap the deferred promises from all the selected LPARs...
+    %results                = $deferred-command-manager.reap;
+    for %HMC{$hmc}<managed-servers>.keys.sort(*.split(/\d+/, :kv).map({ (try .Numeric) // $_}).List) -> $managed-server {
+        for %results.keys.sort(*.split(/\d+/, :kv).map({ (try .Numeric) // $_}).List) -> $partition-number {
+            FCS-grammar.parse(%results{$partition-number}.stdout-results, :actions(FCS-client-actions.new(:$partition-number)));
+            next                if  %results{$partition-number}.exit-code;
+            %HMC{$hmc}<managed-servers>{$managed-server}<lpar>{$partition-number}<fcs> = %client-results{$partition-number};
+        }
+    }
+#ddt %HMC{$hmc};
+#die;
+#   9 => {1} @175
+#       fcs => [4] @176
+#           0 = .FCS @177
+#               $.physical-location = U9080.HEX.78725A8-V9-C133-T0.Str
+#               $.world-wide-node-name = C05076038EE20010.Str
+#               $.world-wide-port-name = C05076038EE20010.Str
+#           1 = .FCS @178
+#               $.physical-location = U9080.HEX.78725A8-V9-C233-T0.Str
+#               $.world-wide-node-name = C05076038EE20014.Str
+#               $.world-wide-port-name = C05076038EE20014.Str
+
+
+    for %HMC{$hmc}<managed-servers>.keys.sort(*.split(/\d+/, :kv).map({ (try .Numeric) // $_}).List) -> $managed-server {
+#       $grid.add-cell(:cell(Our::Grid::Cell.new(:text($managed-server), :bold,                                                                                         :justification<left>)), :0col);
+        for %HMC{$hmc}<managed-servers>{$managed-server}<vios>.keys.sort(*.split(/\d+/, :kv).map({ (try .Numeric) // $_}).List) -> $vio {
+            $grid.add-cell(:cell(Our::Grid::Cell.new(:text($vio),                                                                                                       :justification<left>)), :0col);
+            loop (my $fcs-number = 0; $fcs-number < %HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<fcs>.elems; $fcs-number++) {
+                next unless %HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<fcs>[$fcs-number]:exists;
+                $grid.add-cell(:cell(Our::Grid::Cell.new(:text('fcs' ~ $fcs-number),                                                                                    :justification<left>)), :1col);
+                $grid.add-cell(:cell(Our::Grid::Cell.new(:text(%HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<fcs>[$fcs-number].physical-location),           :justification<left>)), :2col);
+                $grid.add-cell(:cell(Our::Grid::Cell.new(:text(%HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<fcs>[$fcs-number].world-wide-node-name),        :justification<left>)), :3col);
+                $grid.add-cell(:cell(Our::Grid::Cell.new(:text(%HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<fcs>[$fcs-number].world-wide-port-name),        :justification<left>)), :4col);
+                for %HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<viopadaptername2vfchost>{'fcs' ~ $fcs-number}.list -> $vfchost {
+                    next unless $vfchost;
+                    $grid.add-cell(:cell(Our::Grid::Cell.new(:text($vfchost),                                                                                           :justification<left>)), :5col);
+                    if %HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<npiv>{$vfchost}.lpar-name {
+                        $grid.add-cell(:cell(Our::Grid::Cell.new(:text(%HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<npiv>{$vfchost}.lpar-name),             :justification<left>)), :6col);
+                    }
+                    else {
+                        $grid.add-cell(:cell(Our::Grid::Cell.new(:text(''),                                                                                             :justification<left>)), :6col);
+                    }
+                    $grid.add-cell(:cell(Our::Grid::Cell.new(:text(%HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<npiv>{$vfchost}.client-fcs-device),         :justification<left>)), :7col);
+                    $grid.add-cell(:cell(Our::Grid::Cell.new(:text(%HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<npiv>{$vfchost}.client-vadapter-location),  :justification<left>)), :8col);
+
+
+                    my $client-adapter-world-wide-node-name = '';
+                    my $lpar-id                             = %HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<npiv>{$vfchost}.lpar-id;
+                    my $client-adapter                      = %HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<npiv>{$vfchost}.client-fcs-device;
+                    my $client-adapter-number               = $client-adapter.subst('fcs');
+                    if %HMC{$hmc}<managed-servers>{$managed-server}<lpar>{$lpar-id}<fcs>[$client-adapter-number]:exists {
+                        $client-adapter-world-wide-node-name    = %HMC{$hmc}<managed-servers>{$managed-server}<lpar>{$lpar-id}<fcs>[$client-adapter-number].world-wide-node-name;
+                    }
+                    $grid.add-cell(:cell(Our::Grid::Cell.new(:text($client-adapter-world-wide-node-name),                                                               :justification<left>)), :9col);
+                    $grid.current-row++;
+                }
+            }
+        }
+    }
+    {
+        when $text          {   $grid.TEXT-print; }
+        when $html          {   $grid.HTML-print; }
+        when $csv           {   $grid.CSV-print;  }
+        when $json          {   $grid.JSON-print; }
+        when $mailing       {
+                                $grid.send-proxy-mail-via-redis(
+                                    :cro-host<127.0.0.1>,
+                                    :22151cro-port,
+                                    :mail-from($from),
+                                    :@mail-to,
+                                    :@mail-cc,
+                                    :@mail-bcc,
+                                    :$format,
+                                );
+        }
+        when $xml           {   $grid.XML-print;  }
+        when $tui           {   $grid.TUI;        }
+        when $gui           {   $grid.GUI;        }
+        default             {   $grid.ANSI-print; }
+    }
+}
+
+=finish
