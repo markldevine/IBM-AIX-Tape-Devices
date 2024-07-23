@@ -1,9 +1,5 @@
 #!/usr/bin/env raku
 
-#use lib '/home/mdevine/github.com/raku-Our-Utilities/lib';
-#use lib '/home/mdevine/github.com/raku-Our-Grid/lib';
-#use lib '/home/mdevine/github.com/raku-Our-Redis/lib';
-
 use Async::Command::Multi;
 use Our::Cache;
 use Getopt::Long;
@@ -13,122 +9,12 @@ use JSON::Fast;
 use Our::Utilities;
 
 use Data::Dump::Tree;
-#use Grammar::Debugger;
+use Grammar::Debugger;
 
-my %HMC;
-my %vios-results;
-my %client-results;
-
-my class FCS {
+my class Tape-Device {
     has Str $.physical-location;
     has Str $.world-wide-node-name;
     has Str $.world-wide-port-name;
-}
-
-my class NPIV {
-    has Str $.server-vadapter-location;
-    has Int $.lpar-id;
-    has Str $.lpar-name;
-    has Str $.operating-system;
-    has Str $.status;
-    has Str $.vio-padapter-name;
-    has Str $.vio-padapter-location;
-    has Int $.ports-logged-in;
-    has Str $.hex-flags;
-    has Str $.client-fcs-device;
-    has Str $.client-vadapter-location;
-}
-
-my class LSPPARTITIONDLPAR {
-    has Int     $.partition-number;
-    has Str     $.model;
-    has Str     $.type;
-    has Str     $.serial-number;
-    has Str     $.ip-address;
-    has Bool    $.active;
-    has Str     $.os-name;
-    has Str     $.os-vr;
-    has Str     $.os-level;
-}
-
-
-my grammar LSPPARTITIONDLPAR-grammar {
-    token TOP {
-        ^
-        <dlpar-record>+
-    }
-    token dlpar-record {
-        ^^
-        <record-number-field>
-        \s+
-        <partition-field>
-        $$ \n
-        ^^ \s+
-        <active-field>
-        <os-field>
-        .+?
-        $$ \n
-    }
-    token record-number-field   { '<#' <record-number> '>'          }
-    token record-number         { \d+                               }
-    token partition-field       {
-                                    Partition ':<'
-                                    <partition-number>
-                                    '*'
-                                    <model-type>
-                                    '*'
-                                    <serial-number>
-                                    ',' \s+
-                                    <ip-label>*
-                                    ',' \s+
-                                    <ip-address>
-                                    '>'
-                                }
-    token partition-number      { \d+                               }
-    token model-type            { <model> '-' <type>                }
-    token model                 { \w ** 4                           }
-    token type                  { \w ** 3                           }
-    token serial-number         { \w ** 7                           }
-    token ip-label              { <-[,]>+                           }
-    token ip-address            { <ip-address-octet> ** 4 %% '.'    }
-    token ip-address-octet      { \d ** 1..3                        }
-    token active-field          { Active ':<' <active> '>,' \s+     }
-    token active                { \d                                }
-    token os-field              {
-                                    OS ':<'
-                                    <os-name>
-                                    ',' \s+
-                                    <os-vr>
-                                    ',' \s+
-                                    <os-level>
-                                    '>'
-                                }
-
-#   OS:<, , >,
-
-    token os-name               { <-[,]>*                           }
-    token os-vr                 { <-[,]>*                           }
-    token os-level              { <-[\>]>*                          }
-}
-
-class LSPPARTITIONDLPAR-actions {
-    has $.hmc is required;
-
-    method dlpar-record ($/) {
-        my Int $partition-number    = +$/<partition-field><partition-number>;
-        %HMC{$!hmc}<LSPPARTITIONDLPAR>{$partition-number} = LSPPARTITIONDLPAR.new:
-            :$partition-number,
-            :model(~$/<partition-field><model-type><model>),
-            :type(~$/<partition-field><model-type><type>),
-            :serial-number(~$/<partition-field><serial-number>),
-            :ip-address(~$/<partition-field><ip-address>),
-            :active(?$/<active-field><active>),
-            :os-name(~$/<os-field><os-name>),
-            :os-vr(~$/<os-field><os-vr>),
-            :os-level(~$/<os-field><os-level>),
-        ;
-
-    }
 }
 
 grammar FCS-grammar {
