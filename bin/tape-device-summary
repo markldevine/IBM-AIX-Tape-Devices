@@ -9,12 +9,51 @@ use JSON::Fast;
 use Our::Utilities;
 
 use Data::Dump::Tree;
-use Grammar::Debugger;
+#use Grammar::Debugger;
 
-my class Tape-Device {
-    has Str $.physical-location;
-    has Str $.world-wide-node-name;
-    has Str $.world-wide-port-name;
+my %command;
+my %results;
+my %servers;
+
+my class SMC-Device {
+    has Str             $.physical-location;
+    has Str             $.world-wide-node-name;
+    has Str             $.world-wide-port-name;
+}
+
+#  rmt64            U9080.HEX.78725A8-V255-C5-T0-W500308C003D56005-L0  LTO Ultrium Tape Drive (FCP)
+#
+#        Manufacturer................IBM     
+#        Machine Type and Model......ULTRIUM-TD9     
+#        Serial Number...............F003D56004
+#        Device Specific.(FW)........Q9E0
+
+my class RMT-Device {
+    has Str             $.physical-location;
+    has Str             $.host-model;
+    has Str             $.host-type;
+    has Str             $.host-serial;
+    has Str             $.vadapter;
+    has Str             $.vslot;
+    has Str             $.vport;
+    has Str             $.target-WWN;
+    has Str             $.target-LUN;
+    has Str             $.device-model;
+    has Str             $.device-type;
+    has Str             $.serial-number;
+    has Str             $.firmware;
+    has SMC-Device      $!smc;
+    method smcs (Str $smc?) {
+        $!smc           = $smc  if $smc;
+        return $!smc;
+    }
+}
+
+my class FCS-Device {
+    has Str             $.physical-location;
+    has Str             $.world-wide-node-name;
+    has Str             $.world-wide-port-name;
+    has RMT-Device      @!drives;
 }
 
 grammar FCS-grammar {
@@ -39,53 +78,108 @@ grammar FCS-grammar {
     token hardware-location { \w+ '.' \w+ '.' <[0..9A..F]>+ .+? $$  }
 }
 
-class FCS-vio-actions {
-    has $.vio-server    is required;
+class FCS-actions {
+    has $.server  is required;
 
     method fcs-record ($/) {
         my Int $fcs-number = +$/<fcs-device><fcs-number>;
-        %vios-results{$!vio-server}[$fcs-number]   = 
-            FCS.new:
-                :physical-location(~$/<hardware-location>),
-                :world-wide-node-name(~$/<Z8>),
-                :world-wide-port-name(~$/<network-address>),
-            ;
+        %servers{$!server}<FCS>[$fcs-number] = FCS-Device.new:
+            :physical-location(~$/<hardware-location>),
+            :world-wide-node-name(~$/<Z8>),
+            :world-wide-port-name(~$/<network-address>
+        );
     }
 }
 
-class FCS-client-actions {
-    has $.partition-number  is required;
+grammar RMT-grammar {
+    token TOP {
+        ^
+        <rmt-record>+
+    }
+    token rmt-record {
+        \s+ <rmt-device> \s+
+        <physical-location>
+        '-'
+        <target>
+        .+?
+        Machine \s Type \s and \s Model '.'+ <drive-type-model>
+        .+?
+        Serial \s Number '.'+ <serial-number>
+        .+?
+        Device \s Specific '.' \(FW\) '.'+ <firmware>
+        $$
+    }
+    token rmt-device        { rmt <rmt-number>                      }
+    token rmt-number        { \d+                                   }
+    token physical-location {
+        <host-model>
+        '.'
+        <host-type>
+        '.'
+        <host-serial>
+        '-'
+        <vadapter>
+        '-'
+        <vslot>
+        '-'
+        <vport>
+    }
+    token host-model        { \w+                                   }
+    token host-type         { \w+                                   }
+    token host-serial       { \w+                                   }
+    token vadapter          { \w+                                   }
+    token vslot             { C \w+                                 }
+    token vport             { T \w+                                 }
+    token target            { <target-WWN> '-' <target-LUN>         }
+    token target-WWN        { W <[0..9A..F]> ** 16                  }
+    token target-LUN        { L \w+                                 }
+    token drive-type-model  { <device-model> '-' <device-type>      }
+    token device-model      { \w+                                   }
+    token device-type       { \w+                                   }
+    token serial-number     { \w+                                   }
+    token firmware          { \w+                                   }
+}
 
-    method fcs-record ($/) {
-        my Int $fcs-number = +$/<fcs-device><fcs-number>;
-        %client-results{$!partition-number}[$fcs-number]   = 
-            FCS.new:
-                :physical-location(~$/<hardware-location>),
-                :world-wide-node-name(~$/<Z8>),
-                :world-wide-port-name(~$/<network-address>),
-            ;
+class RMT-actions {
+    has $.server  is required;
+
+    method rmt-record ($/) {
+        my Int $rmt-number = +$/<rmt-device><rmt-number>;
+        %servers{$!server}<RMT>[$rmt-number] = RMT-Device.new:
+            :physical-location(~$/<physical-location>),
+            :host-model(~$/<physical-location><host-model>),
+            :host-type(~$/<physical-location><host-type>),
+            :host-serial(~$/<physical-location><host-serial>),
+            :vadapter(~$/<physical-location><vadapter>),
+            :vslot(~$/<physical-location><vslot>),
+            :vport(~$/<physical-location><vport>),
+            :target-WWN(~$/<target><target-WWN>),
+            :target-LUN(~$/<target><target-LUN>),
+            :device-model(~$/<drive-type-model><device-model>),
+            :device-type(~$/<drive-type-model><device-type>),
+            :serial-number(~$/<serial-number>),
+            :firmware(~$/<firmware>),
+        ;
     }
 }
 
 sub MAIN (
-    Str                 :$hmc!,                                 #= HMC to query
-    Str                 :$model-type,                           #= restrict managed systems to only M-T
-    Bool                :$group-by-vios,                        #= group data around vio servers
-    Bool                :$csv,                                  #= dump CSV to STDOUT
-    Str                 :$grid-proxy-host   = '127.0.0.1',      #= hostname of grid proxy for remote services
-    Bool                :$gui,                                  #= Graphical User Interface
-    Bool                :$html,                                 #= dump HTML to STDOUT
-    Bool                :$json,                                 #= dump JSON to STDOUT
-#   Grid-Email-Formats  :$mail-body-format,                     #= email body format
-                        :$mail-body-format,                     #= email body format
-                        :$mail-from,                            #= email 'From:' addressee
-                        :@mail-to,                              #= accumulate email 'To:' addressees
-                        :@mail-cc,                              #= accumulate email 'Cc:' addressees
-                        :@mail-bcc,                             #= accumulate email 'Bcc:' addressees
-    Bool                :$text,                                 #= TEXT print
-    Bool                :$tui,                                  #= Terminal User Interface
-    Bool                :$xml,                                  #= dump XML to STDOUT
-    Bool                :$light-mode,                           #= reverse header highlight for light-mode
+                            :@servers            = ('isplc01','isplm01'),   #= Server to query
+    Bool                    :$csv,                                          #= Dump CSV to STDOUT
+    Str                     :$grid-proxy-host   = '127.0.0.1',              #= Hostname of grid proxy for remote services
+    Bool                    :$gui,                                          #= Graphical User Interface
+    Bool                    :$html,                                         #= Dump HTML to STDOUT
+    Bool                    :$json,                                         #= Dump JSON to STDOUT
+#   Grid-Email-Formats      :$mail-body-format,                             #= Email body format
+                            :$mail-body-format,                             #= Email body format
+                            :$mail-from,                                    #= Email 'From:' addressee
+                            :@mail-to,                                      #= Accumulate email 'To:' addressees
+                            :@mail-cc,                                      #= Accumulate email 'Cc:' addressees
+                            :@mail-bcc,                                     #= Accumulate email 'Bcc:' addressees
+    Bool                    :$text,                                         #= TEXT print
+    Bool                    :$tui,                                          #= Terminal User Interface
+    Bool                    :$xml,                                          #= Dump XML to STDOUT
+    Bool                    :$light-mode,                                   #= Reverse header highlight for light-mode
 ) {
     my Bool $mailing;
     my $from                = $mail-from;
@@ -98,37 +192,17 @@ sub MAIN (
         $mailing = True;
     }
     my $reverse-highlight   = $light-mode ?? True !! False;
-    my $identifier          = 'preferences';
-    my $preferences-cache   = Our::Cache.new(:$identifier);
+    my $preferences-cache   = Our::Cache.new(:identifier<preferences>);
     my $preferences         = from-json($preferences-cache.fetch) if $preferences-cache.cache-hit;
     without $light-mode {
         $reverse-highlight  = $preferences<light-mode> if $preferences<light-mode>:exists;
     }
     $preferences-cache.store(:data(to-json({light-mode => $reverse-highlight})));
-    my %command;
-    %command{$hmc}          = ['ssh', $hmc, 'lssyscfg', '-r', 'sys', '-F', 'name'];
-    my $command-manager     = Async::Command::Multi.new(:%command, :20time-out, :8batch);
-    my %results             = $command-manager.sow.reap;
-    for %results.keys.sort(*.split(/\d+/, :kv).map({ (try .Numeric) // $_}).List) -> $hmc-server {
-        for %results{$hmc-server}.stdout-results.trim.split("\n").list -> $managed-server {
-            next unless $managed-server ~~ /9080 '-' HEX/;
-            %HMC{$hmc-server}<managed-servers>{$managed-server} = {};
-        }
-        die "No managed servers found on HMC '$hmc-server'!" unless %HMC{$hmc}.elems;
-    }
 
-    %command                = ();
-    %command{$hmc}          = ['ssh', $hmc, 'lspartition', '-dlpar'];
-    $command-manager        = Async::Command::Multi.new(:%command, :20time-out, :8batch);
-    %results                = $command-manager.sow.reap;
-    LSPPARTITIONDLPAR-grammar.parse(%results{$hmc}.stdout-results, :actions(LSPPARTITIONDLPAR-actions.new(:$hmc))) || die;
-
-    %command                = ();
-    for %HMC{$hmc}<LSPPARTITIONDLPAR>.keys -> $partition-number {
-        next if $model-type && %HMC{$hmc}<LSPPARTITIONDLPAR>{$partition-number}.model ~ '-' ~ %HMC{$hmc}<LSPPARTITIONDLPAR>{$partition-number}.type ne $model-type;
-        %command{$partition-number} = [
+    for @servers.sort -> $server {
+        %command{$server}   = [
             'ssh',
-            %HMC{$hmc}<LSPPARTITIONDLPAR>{$partition-number}.ip-address,
+            $server,
             '-o', 'BatchMode=yes',
             '-o', 'PreferredAuthentications=publickey',
             'lscfg',
@@ -137,78 +211,44 @@ sub MAIN (
         ];
     }
 
-    my $deferred-command-manager = Async::Command::Multi.new(:%command, :10time-out, :8batch).sow;
-
-
-    %command                = ();
-    for %HMC{$hmc}<managed-servers>.keys.sort(*.split(/\d+/, :kv).map({ (try .Numeric) // $_}).List) -> $managed-server {
-        %command{$managed-server} = ['ssh', $hmc, 'lssyscfg', '-m', $managed-server, '-r', 'lpar', '-F', 'lpar_id,name'];
-    }
-    $command-manager        = Async::Command::Multi.new(:%command, :20time-out, :8batch);
-    %results                = $command-manager.sow.reap;
-    for %results.keys.sort(*.split(/\d+/, :kv).map({ (try .Numeric) // $_}).List) -> $managed-server {
-        for %results{$managed-server}.stdout-results.trim.split("\n").list -> $record {
-            my ($lpar-id, $name) = $record.split: ',';
-            %HMC{$hmc}<managed-servers>{$managed-server}<id2name>{$lpar-id}  = $name;
-            %HMC{$hmc}<managed-servers>{$managed-server}<name2id>{$name}     = $lpar-id;
-        }
-    }
-
-    for %HMC{$hmc}<managed-servers>.keys.sort(*.split(/\d+/, :kv).map({ (try .Numeric) // $_}).List) -> $managed-server {
-        for %HMC{$hmc}<managed-servers>{$managed-server}<name2id>.keys -> $name {
-            %HMC{$hmc}<managed-servers>{$managed-server}<vios>{$name} = {} if $name ~~ /vio/;
-        }
+    %results                = Async::Command::Multi.new(:%command, :10time-out, :8batch).sow.reap;
+    for %results.keys.sort -> $server {
+        FCS-grammar.parse(%results{$server}.stdout-results, :actions(FCS-actions.new(:$server)));
+        die 'No fcs adapters found!' unless %servers{$server}<FCS>.elems;
     }
 
     %command                = ();
-    for %HMC{$hmc}<managed-servers>.keys.sort(*.split(/\d+/, :kv).map({ (try .Numeric) // $_}).List) -> $managed-server {
-        for %HMC{$hmc}<managed-servers>{$managed-server}<vios>.keys.sort(*.split(/\d+/, :kv).map({ (try .Numeric) // $_}).List) -> $vio {
-            %command{$vio}      = ['ssh', 'padmin@' ~ $vio, 'ioscli', 'lsdev', '-dev', 'fcs*', '-vpd'];
-        }
-        $command-manager        = Async::Command::Multi.new(:%command, :20time-out, :8batch);
-        %results                = $command-manager.sow.reap;
-        for %results.keys.sort(*.split(/\d+/, :kv).map({ (try .Numeric) // $_}).List) -> $vio-server {
-            FCS-grammar.parse(%results{$vio-server}.stdout-results, :actions(FCS-vio-actions.new(:$vio-server)));
-            die 'No fcs adapters found!' unless %vios-results{$vio-server}.elems;
-            %HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio-server}<fcs> = %vios-results{$vio-server};
-        }
+    %results                = ();
+
+    for @servers.sort -> $server {
+        %command{$server}   = [
+            'ssh',
+            $server,
+            '-o', 'BatchMode=yes',
+            '-o', 'PreferredAuthentications=publickey',
+            'lscfg',
+            '-vl',
+            'rmt*',
+        ];
     }
 
-    %command                = ();
-    for %HMC{$hmc}<managed-servers>.keys.sort(*.split(/\d+/, :kv).map({ (try .Numeric) // $_}).List) -> $managed-server {
-        for %HMC{$hmc}<managed-servers>{$managed-server}<vios>.keys -> $vio {
-            %command{$vio}      = ['ssh', 'padmin@' ~ $vio, 'ioscli', 'lsmap', '-npiv', '-all', '-fmt', ':'];
-        }
-        $command-manager        = Async::Command::Multi.new(:%command, :20time-out, :8batch);
-        %results                = $command-manager.sow.reap;
-        for %results.keys.sort(*.split(/\d+/, :kv).map({ (try .Numeric) // $_}).List) -> $vio-server {
-            for %results{$vio-server}.stdout-results.trim.split("\n").list -> $record {
-                my @fields      = $record.split(':');
-                %HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio-server}<npiv>{@fields[0]} = NPIV.new:
-                    :server-vadapter-location(@fields[1]),
-                    :lpar-id(@fields[2].Int),
-                    :lpar-name(@fields[3] ?? @fields[3] !! ''),
-                    :operating-system(@fields[4]),
-                    :status(@fields[5]),
-                    :vio-padapter-name(@fields[6]),
-                    :vio-padapter-location(@fields[7]),
-                    :ports-logged-in(@fields[8].Int),
-                    :hex-flags(@fields[9]),
-                    :client-fcs-device(@fields[10]),
-                    :client-vadapter-location(@fields[11]),
-                ;
-                %HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio-server}<viopadaptername2vfchost>{@fields[6]}.push: @fields[0];
-            }
-        }
+    %results                = Async::Command::Multi.new(:%command, :10time-out, :8batch).sow.reap;
+    for %results.keys.sort -> $server {
+        RMT-grammar.parse(%results{$server}.stdout-results, :actions(RMT-actions.new(:$server)));
+        die 'No rmt devices found!' unless %servers{$server}<RMT>.elems;
     }
+
+ddt %servers;
+}
+=finish
+
     my Our::Grid $grid;
-    if $group-by-vios {
-        $grid  .= new: :title('NPIV Summary'), :$grid-proxy-host, :$reverse-highlight, :0group-by-column;
-    }
-    else {
+#   if $group-by-vios {
+#       $grid  .= new: :title('NPIV Summary'), :$grid-proxy-host, :$reverse-highlight, :0group-by-column;
+#   }
+#   else {
         $grid  .= new: :title('NPIV Summary'), :$grid-proxy-host, :$reverse-highlight;
-    }
-#   $grid.add-heading('Managed Server',     :justification<left>),
+#   }
     $grid.add-heading('VIO Server',         :justification<left>);
     $grid.add-heading('Physical Adapter',   :justification<left>);
     $grid.add-heading('Physical Location',  :justification<left>);
