@@ -15,40 +15,6 @@ my %command;
 my %results;
 my %servers;
 
-my class SMC-Device {
-    has Str             $.physical-location;
-    has Str             $.world-wide-node-name;
-    has Str             $.world-wide-port-name;
-}
-
-#  rmt64            U9080.HEX.78725A8-V255-C5-T0-W500308C003D56005-L0  LTO Ultrium Tape Drive (FCP)
-#
-#        Manufacturer................IBM     
-#        Machine Type and Model......ULTRIUM-TD9     
-#        Serial Number...............F003D56004
-#        Device Specific.(FW)........Q9E0
-
-my class RMT-Device {
-    has Str             $.physical-location;
-    has Str             $.host-model;
-    has Str             $.host-type;
-    has Str             $.host-serial;
-    has Str             $.vadapter;
-    has Str             $.vslot;
-    has Str             $.vport;
-    has Str             $.target-WWN;
-    has Str             $.target-LUN;
-    has Str             $.device-model;
-    has Str             $.device-type;
-    has Str             $.serial-number;
-    has Str             $.firmware;
-    has SMC-Device      $!smc;
-    method smcs (Str $smc?) {
-        $!smc           = $smc  if $smc;
-        return $!smc;
-    }
-}
-
 my class FCS-Device {
     has Str             $.physical-location;
     has Str             $.world-wide-node-name;
@@ -88,6 +54,27 @@ class FCS-actions {
             :world-wide-node-name(~$/<Z8>),
             :world-wide-port-name(~$/<network-address>
         );
+    }
+}
+
+my class RMT-Device {
+    has Str             $.physical-location;
+    has Str             $.host-model;
+    has Str             $.host-type;
+    has Str             $.host-serial;
+    has Str             $.vadapter;
+    has Str             $.vslot;
+    has Str             $.vport;
+    has Str             $.target-WWN;
+    has Str             $.target-LUN;
+    has Str             $.device-model;
+    has Str             $.device-type;
+    has Str             $.serial-number;
+    has Str             $.firmware;
+    has SMC-Device      $!smc;
+    method smc (SMC-Device $smc?) {
+        $!smc           = $smc  if $smc;
+        return $!smc;
     }
 }
 
@@ -146,6 +133,99 @@ class RMT-actions {
     method rmt-record ($/) {
         my Int $rmt-number = +$/<rmt-device><rmt-number>;
         %servers{$!server}<RMT>[$rmt-number] = RMT-Device.new:
+            :physical-location(~$/<physical-location>),
+            :host-model(~$/<physical-location><host-model>),
+            :host-type(~$/<physical-location><host-type>),
+            :host-serial(~$/<physical-location><host-serial>),
+            :vadapter(~$/<physical-location><vadapter>),
+            :vslot(~$/<physical-location><vslot>),
+            :vport(~$/<physical-location><vport>),
+            :target-WWN(~$/<target><target-WWN>),
+            :target-LUN(~$/<target><target-LUN>),
+            :device-model(~$/<drive-type-model><device-model>),
+            :device-type(~$/<drive-type-model><device-type>),
+            :serial-number(~$/<serial-number>),
+            :firmware(~$/<firmware>),
+        ;
+    }
+}
+
+my class SMC-Device {
+    has Str             $.physical-location;
+    has Str             $.host-model;
+    has Str             $.host-type;
+    has Str             $.host-serial;
+    has Str             $.vadapter;
+    has Str             $.vslot;
+    has Str             $.vport;
+    has Str             $.target-WWN;
+    has Str             $.target-LUN;
+    has Str             $.device-model;
+    has Str             $.device-type;
+    has Str             $.serial-number;
+    has Str             $.firmware;
+    has RMT-Device      $!rmt;
+    method rmt (RMT-Device $rmt?) {
+        $!rmt           = $rmt  if $rmt;
+        return $!rmt;
+    }
+}
+
+grammar SMC-grammar {
+    token TOP {
+        ^
+        <smc-record>+
+    }
+    token smc-record {
+        \s+ <smc-device> \s+
+        <physical-location>
+        '-'
+        <target>
+        .+?
+        Machine \s Type \s and \s Model '.'+ <drive-type-model>
+        .+?
+        Serial \s Number '.'+ <serial-number>
+        .+?
+        Device \s Specific '.' \(FW\) '.'+ <firmware>
+        $$
+    }
+    token smc-device        { smc <smc-number>                      }
+    token smc-number        { \d+                                   }
+    token physical-location {
+        <host-model>
+        '.'
+        <host-type>
+        '.'
+        <host-serial>
+        '-'
+        <vadapter>
+        '-'
+        <vslot>
+        '-'
+        <vport>
+    }
+    token host-model        { \w+                                   }
+    token host-type         { \w+                                   }
+    token host-serial       { \w+                                   }
+    token vadapter          { \w+                                   }
+    token vslot             { C \w+                                 }
+    token vport             { T \w+                                 }
+    token target            { <target-WWN> '-' <target-LUN>         }
+    token target-WWN        { W <[0..9A..F]> ** 16                  }
+    token target-LUN        { L \w+                                 }
+    token drive-type-model  { <device-model> '-' <device-type>      }
+    token device-model      { \w+                                   }
+    token device-type       { \w+                                   }
+    token serial-number     { \w+                                   }
+    token firmware          { \w+                                   }
+}
+
+class SMC-actions {
+    has $.server  is required;
+
+    method smc-record ($/) {
+        my Int $smc-number = +$/<smc-device><smc-number>;
+        %servers{$!server}<SMC>[$smc-number] = SMC-Device.new:
             :physical-location(~$/<physical-location>),
             :host-model(~$/<physical-location><host-model>),
             :host-type(~$/<physical-location><host-type>),
@@ -236,6 +316,27 @@ sub MAIN (
     for %results.keys.sort -> $server {
         RMT-grammar.parse(%results{$server}.stdout-results, :actions(RMT-actions.new(:$server)));
         die 'No rmt devices found!' unless %servers{$server}<RMT>.elems;
+    }
+
+    %command                = ();
+    %results                = ();
+
+    for @servers.sort -> $server {
+        %command{$server}   = [
+            'ssh',
+            $server,
+            '-o', 'BatchMode=yes',
+            '-o', 'PreferredAuthentications=publickey',
+            'lscfg',
+            '-vl',
+            'smc*',
+        ];
+    }
+
+    %results                = Async::Command::Multi.new(:%command, :10time-out, :8batch).sow.reap;
+    for %results.keys.sort -> $server {
+        SMC-grammar.parse(%results{$server}.stdout-results, :actions(SMC-actions.new(:$server)));
+        die 'No smc devices found!' unless %servers{$server}<SMC>.elems;
     }
 
 ddt %servers;
