@@ -14,6 +14,7 @@ use Data::Dump::Tree;
 my %command;
 my %results;
 my %servers;
+my %pl2fcs;
 
 my class FCS-Device {
     has Str             $.physical-location;
@@ -49,6 +50,7 @@ class FCS-actions {
 
     method fcs-record ($/) {
         my Int $fcs-number = +$/<fcs-device><fcs-number>;
+        %pl2fcs{$!server}{~$/<hardware-location>} = $fcs-number;
         %servers{$!server}<FCS>[$fcs-number] = FCS-Device.new:
             :physical-location(~$/<hardware-location>),
             :world-wide-node-name(~$/<Z8>),
@@ -58,6 +60,7 @@ class FCS-actions {
 }
 
 my class RMT-Device {
+    has Int             $.rmt-number;
     has Str             $.physical-location;
     has Str             $.host-model;
     has Str             $.host-type;
@@ -65,17 +68,16 @@ my class RMT-Device {
     has Str             $.vadapter;
     has Str             $.vslot;
     has Str             $.vport;
-    has Str             $.target-WWN;
+    has Str             $.target-WWPN;
     has Str             $.target-LUN;
     has Str             $.device-model;
     has Str             $.device-type;
     has Str             $.serial-number;
     has Str             $.firmware;
-    has                 $!smc;
-    method smc ($smc?) {
-        $!smc           = $smc  if $smc;
-        return $!smc;
-    }
+    has Int             $.parent-fcs-adapter;
+    has                 @!smcs;
+    method push-smc (Str:D $smc where * ~~ /^ smc \d+ $/) { @!smcs.push: $smc; }
+    method smcs () { return @!smcs.join(', '); }
 }
 
 grammar RMT-grammar {
@@ -117,8 +119,8 @@ grammar RMT-grammar {
     token vadapter          { \w+                                   }
     token vslot             { C \w+                                 }
     token vport             { T \w+                                 }
-    token target            { <target-WWN> '-' <target-LUN>         }
-    token target-WWN        { W <[0..9A..F]> ** 16                  }
+    token target            { <target-WWPN> '-' <target-LUN>        }
+    token target-WWPN        { W <[0..9A..F]> ** 16                 }
     token target-LUN        { L \w+                                 }
     token drive-type-model  { <device-model> '-' <device-type>      }
     token device-model      { \w+                                   }
@@ -131,8 +133,10 @@ class RMT-actions {
     has $.server  is required;
 
     method rmt-record ($/) {
-        my Int $rmt-number = +$/<rmt-device><rmt-number>;
+        my Int $rmt-number          = +$/<rmt-device><rmt-number>;
+        my Int $parent-fcs-adapter  = %pl2fcs{$!server}{~$/<physical-location>};
         %servers{$!server}<RMT>[$rmt-number] = RMT-Device.new:
+            :$rmt-number,
             :physical-location(~$/<physical-location>),
             :host-model(~$/<physical-location><host-model>),
             :host-type(~$/<physical-location><host-type>),
@@ -140,17 +144,19 @@ class RMT-actions {
             :vadapter(~$/<physical-location><vadapter>),
             :vslot(~$/<physical-location><vslot>),
             :vport(~$/<physical-location><vport>),
-            :target-WWN(~$/<target><target-WWN>),
+            :target-WWPN(~$/<target><target-WWPN>),
             :target-LUN(~$/<target><target-LUN>),
             :device-model(~$/<drive-type-model><device-model>),
             :device-type(~$/<drive-type-model><device-type>),
             :serial-number(~$/<serial-number>),
             :firmware(~$/<firmware>),
+            :$parent-fcs-adapter,
         ;
     }
 }
 
 my class SMC-Device {
+    has Int             $.smc-number;
     has Str             $.physical-location;
     has Str             $.host-model;
     has Str             $.host-type;
@@ -158,16 +164,15 @@ my class SMC-Device {
     has Str             $.vadapter;
     has Str             $.vslot;
     has Str             $.vport;
-    has Str             $.target-WWN;
+    has Str             $.target-WWPN;
     has Str             $.target-LUN;
     has Str             $.device-type-model;
     has Str             $.serial-number;
     has Str             $.firmware;
-    has                 $!rmt;
-    method rmt ($rmt?) {
-        $!rmt           = $rmt  if $rmt;
-        return $!rmt;
-    }
+    has Int             $.parent-fcs-adapter;
+    has                 @!rmts;
+    method push-rmt (Str:D $rmt where * ~~ /^ rmt \d+ $/) { @!rmts.push: $rmt; }
+    method rmts () { return @!rmts.join(', '); }
 }
 
 grammar SMC-grammar {
@@ -209,8 +214,8 @@ grammar SMC-grammar {
     token vadapter          { \w+                                   }
     token vslot             { C \w+                                 }
     token vport             { T \w+                                 }
-    token target            { <target-WWN> '-' <target-LUN>         }
-    token target-WWN        { W <[0..9A..F]> ** 16                  }
+    token target            { <target-WWPN> '-' <target-LUN>        }
+    token target-WWPN        { W <[0..9A..F]> ** 16                 }
     token target-LUN        { L \w+                                 }
     token drive-type-model  { .+?                                $$ }
     token serial-number     { \w+                                   }
@@ -221,8 +226,10 @@ class SMC-actions {
     has $.server  is required;
 
     method smc-record ($/) {
-        my Int $smc-number = +$/<smc-device><smc-number>;
+        my Int $smc-number          = +$/<smc-device><smc-number>;
+        my Int $parent-fcs-adapter  = %pl2fcs{$!server}{~$/<physical-location>};
         %servers{$!server}<SMC>[$smc-number] = SMC-Device.new:
+            :$smc-number,
             :physical-location(~$/<physical-location>),
             :host-model(~$/<physical-location><host-model>),
             :host-type(~$/<physical-location><host-type>),
@@ -230,11 +237,12 @@ class SMC-actions {
             :vadapter(~$/<physical-location><vadapter>),
             :vslot(~$/<physical-location><vslot>),
             :vport(~$/<physical-location><vport>),
-            :target-WWN(~$/<target><target-WWN>),
+            :target-WWPN(~$/<target><target-WWPN>),
             :target-LUN(~$/<target><target-LUN>),
             :device-type-model(~$/<drive-type-model>.trim),
             :serial-number(~$/<serial-number>),
             :firmware(~$/<firmware>),
+            :$parent-fcs-adapter,
         ;
     }
 }
@@ -335,85 +343,69 @@ sub MAIN (
         note 'No smc devices found!' unless %servers{$server}<SMC>.elems;
     }
 
-ddt %servers;
-}
-=finish
+    for %servers.keys.sort -> $server {
+        for %servers{$server}<RMT>.list -> $rmt {
+            for %servers{$server}<SMC>.list -> $smc {
+                if $rmt.target-WWPN eq $smc.target-WWPN {
+                    $rmt.push-smc('smc' ~ $smc.smc-number);
+                }
+            }
+        }
+        for %servers{$server}<SMC>.list -> $smc {
+            for %servers{$server}<RMT>.list -> $rmt {
+                if $smc.target-WWPN eq $rmt.target-WWPN {
+                    $smc.push-rmt('rmt' ~ $rmt.rmt-number);
+                }
+            }
+        }
+    }
+
+#ddt %servers;
 
     my Our::Grid $grid;
 #   if $group-by-vios {
-#       $grid  .= new: :title('NPIV Summary'), :$grid-proxy-host, :$reverse-highlight, :0group-by-column;
+#       $grid  .= new: :title('IBM AIX Tape Device Summary'), :$grid-proxy-host, :$reverse-highlight, :0group-by-column;
 #   }
 #   else {
-        $grid  .= new: :title('NPIV Summary'), :$grid-proxy-host, :$reverse-highlight;
+        $grid  .= new: :title('IBM AIX Tape Device Summary'), :$grid-proxy-host, :$reverse-highlight;
 #   }
-    $grid.add-heading('VIO Server',         :justification<left>);
-    $grid.add-heading('Physical Adapter',   :justification<left>);
-    $grid.add-heading('Physical Location',  :justification<left>);
-    $grid.add-heading('WW Node Name',       :justification<right>);
-    $grid.add-heading('WW Port Name',       :justification<right>);
-    $grid.add-heading('LPAR',               :justification<left>);
-    $grid.add-heading('vfchost',            :justification<left>);
-    $grid.add-heading('LPAR Adapter',       :justification<center>);
-    $grid.add-heading('LPAR Location',      :justification<left>);
-    $grid.add-heading('LPAR WW Node Name',  :justification<right>);
+    $grid.add-heading('Server',                                                                                                                                     :justification<left>);
+    $grid.add-heading('fcs',                                                                                                                                        :justification<left>);
+    $grid.add-heading('Physical Location',                                                                                                                          :justification<left>);
+    $grid.add-heading('WW Node Name',                                                                                                                               :justification<right>);
+    $grid.add-heading('WW Port Name',                                                                                                                               :justification<right>);
 
-#   reap the deferred promises from all the selected LPARs...
-    %results                = $deferred-command-manager.reap;
-    for %HMC{$hmc}<managed-servers>.keys.sort(*.split(/\d+/, :kv).map({ (try .Numeric) // $_}).List) -> $managed-server {
-        for %results.keys.sort(*.split(/\d+/, :kv).map({ (try .Numeric) // $_}).List) -> $partition-number {
-            FCS-grammar.parse(%results{$partition-number}.stdout-results, :actions(FCS-client-actions.new(:$partition-number)));
-            next                if  %results{$partition-number}.exit-code;
-            %HMC{$hmc}<managed-servers>{$managed-server}<lpar>{$partition-number}<fcs> = %client-results{$partition-number};
-        }
-    }
-#ddt %HMC{$hmc};
-#die;
-#   9 => {1} @175
-#       fcs => [4] @176
-#           0 = .FCS @177
-#               $.physical-location = U9080.HEX.78725A8-V9-C133-T0.Str
-#               $.world-wide-node-name = C05076038EE20010.Str
-#               $.world-wide-port-name = C05076038EE20010.Str
-#           1 = .FCS @178
-#               $.physical-location = U9080.HEX.78725A8-V9-C233-T0.Str
-#               $.world-wide-node-name = C05076038EE20014.Str
-#               $.world-wide-port-name = C05076038EE20014.Str
+    for %servers.keys.sort -> $server {
+        $grid.add-cell(:cell(Our::Grid::Cell.new(:text($server), :bold,                                                                                             :justification<left>)), :0col);
+        for %servers{$server}<FCS>.keys.sort -> $fcs-number {
+die $fcs-number;
+            $grid.add-cell(:cell(Our::Grid::Cell.new(:text('fcs' ~ $fcs-number),                                                                                    :justification<left>)), :1col);
+            $grid.add-cell(:cell(Our::Grid::Cell.new(:text(%servers{$server}<FCS>[$fcs-number].physical-location),                                                 :justification<left>)), :2col);
+            $grid.add-cell(:cell(Our::Grid::Cell.new(:text(%servers{$server}<FCS>[$fcs-number].world-wide-node-name),                                              :justification<left>)), :3col);
+            $grid.add-cell(:cell(Our::Grid::Cell.new(:text(%servers{$server}<FCS>[$fcs-number].world-wide-port-name),                                              :justification<left>)), :4col);
+#           for %servers{$server}<RMT>.list -> $rmt-obj {
+#               next unless $vfchost;
+#               $grid.add-cell(:cell(Our::Grid::Cell.new(:text($vfchost),                                                                                           :justification<left>)), :5col);
+#               if %HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<npiv>{$vfchost}.lpar-name {
+#                   $grid.add-cell(:cell(Our::Grid::Cell.new(:text(%HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<npiv>{$vfchost}.lpar-name),             :justification<left>)), :6col);
+#               }
+#               else {
+#                   $grid.add-cell(:cell(Our::Grid::Cell.new(:text(''),                                                                                             :justification<left>)), :7col);
+#               }
+#               $grid.add-cell(:cell(Our::Grid::Cell.new(:text(%HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<npiv>{$vfchost}.client-fcs-device),         :justification<left>)), :8col);
+#               $grid.add-cell(:cell(Our::Grid::Cell.new(:text(%HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<npiv>{$vfchost}.client-vadapter-location),  :justification<left>)), :9col);
 
 
-    for %HMC{$hmc}<managed-servers>.keys.sort(*.split(/\d+/, :kv).map({ (try .Numeric) // $_}).List) -> $managed-server {
-#       $grid.add-cell(:cell(Our::Grid::Cell.new(:text($managed-server), :bold,                                                                                         :justification<left>)), :0col);
-        for %HMC{$hmc}<managed-servers>{$managed-server}<vios>.keys.sort(*.split(/\d+/, :kv).map({ (try .Numeric) // $_}).List) -> $vio {
-            $grid.add-cell(:cell(Our::Grid::Cell.new(:text($vio),                                                                                                       :justification<left>)), :0col);
-            loop (my $fcs-number = 0; $fcs-number < %HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<fcs>.elems; $fcs-number++) {
-                next unless %HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<fcs>[$fcs-number]:exists;
-                $grid.add-cell(:cell(Our::Grid::Cell.new(:text('fcs' ~ $fcs-number),                                                                                    :justification<left>)), :1col);
-                $grid.add-cell(:cell(Our::Grid::Cell.new(:text(%HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<fcs>[$fcs-number].physical-location),           :justification<left>)), :2col);
-                $grid.add-cell(:cell(Our::Grid::Cell.new(:text(%HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<fcs>[$fcs-number].world-wide-node-name),        :justification<left>)), :3col);
-                $grid.add-cell(:cell(Our::Grid::Cell.new(:text(%HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<fcs>[$fcs-number].world-wide-port-name),        :justification<left>)), :4col);
-                for %HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<viopadaptername2vfchost>{'fcs' ~ $fcs-number}.list -> $vfchost {
-                    next unless $vfchost;
-                    $grid.add-cell(:cell(Our::Grid::Cell.new(:text($vfchost),                                                                                           :justification<left>)), :5col);
-                    if %HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<npiv>{$vfchost}.lpar-name {
-                        $grid.add-cell(:cell(Our::Grid::Cell.new(:text(%HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<npiv>{$vfchost}.lpar-name),             :justification<left>)), :6col);
-                    }
-                    else {
-                        $grid.add-cell(:cell(Our::Grid::Cell.new(:text(''),                                                                                             :justification<left>)), :6col);
-                    }
-                    $grid.add-cell(:cell(Our::Grid::Cell.new(:text(%HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<npiv>{$vfchost}.client-fcs-device),         :justification<left>)), :7col);
-                    $grid.add-cell(:cell(Our::Grid::Cell.new(:text(%HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<npiv>{$vfchost}.client-vadapter-location),  :justification<left>)), :8col);
-
-
-                    my $client-adapter-world-wide-node-name = '';
-                    my $lpar-id                             = %HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<npiv>{$vfchost}.lpar-id;
-                    my $client-adapter                      = %HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<npiv>{$vfchost}.client-fcs-device;
-                    my $client-adapter-number               = $client-adapter.subst('fcs');
-                    if %HMC{$hmc}<managed-servers>{$managed-server}<lpar>{$lpar-id}<fcs>[$client-adapter-number]:exists {
-                        $client-adapter-world-wide-node-name    = %HMC{$hmc}<managed-servers>{$managed-server}<lpar>{$lpar-id}<fcs>[$client-adapter-number].world-wide-node-name;
-                    }
-                    $grid.add-cell(:cell(Our::Grid::Cell.new(:text($client-adapter-world-wide-node-name),                                                               :justification<left>)), :9col);
-                    $grid.current-row++;
-                }
-            }
+#               my $client-adapter-world-wide-node-name = '';
+#               my $lpar-id                             = %HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<npiv>{$vfchost}.lpar-id;
+#               my $client-adapter                      = %HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<npiv>{$vfchost}.client-fcs-device;
+#               my $client-adapter-number               = $client-adapter.subst('fcs');
+#               if %HMC{$hmc}<managed-servers>{$managed-server}<lpar>{$lpar-id}<fcs>[$client-adapter-number]:exists {
+#                   $client-adapter-world-wide-node-name    = %HMC{$hmc}<managed-servers>{$managed-server}<lpar>{$lpar-id}<fcs>[$client-adapter-number].world-wide-node-name;
+#               }
+#               $grid.add-cell(:cell(Our::Grid::Cell.new(:text($client-adapter-world-wide-node-name),                                                               :justification<left>)), :10col);
+#               $grid.current-row++;
+#           }
         }
     }
     {
