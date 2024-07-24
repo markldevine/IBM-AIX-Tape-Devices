@@ -264,6 +264,7 @@ sub MAIN (
     Bool                    :$tui,                                          #= Terminal User Interface
     Bool                    :$xml,                                          #= Dump XML to STDOUT
     Bool                    :$light-mode,                                   #= Reverse header highlight for light-mode
+    Bool                    :$group-by-server,                              #= Group by AIX server
 ) {
     my Bool $mailing;
     my $from                = $mail-from;
@@ -360,59 +361,14 @@ sub MAIN (
         }
     }
 
-#ddt %servers;
-
     my Our::Grid $grid;
-#   if $group-by-vios {
-#       $grid  .= new: :title('IBM AIX Tape Device Summary'), :$grid-proxy-host, :$reverse-highlight, :0group-by-column;
-#   }
-#   else {
-        $grid  .= new: :title('IBM AIX Tape Device Summary'), :$grid-proxy-host, :$reverse-highlight;
-#   }
-    $grid.add-heading('Server',                                                                                                                                     :justification<left>);
-    $grid.add-heading('fcs',                                                                                                                                        :justification<left>);
-    $grid.add-heading('Physical Location',                                                                                                                          :justification<left>);
-    $grid.add-heading('WW Node Name',                                                                                                                               :justification<right>);
-    $grid.add-heading('WW Port Name',                                                                                                                               :justification<right>);
+    by-fcs(:$grid);
 
-    for %servers.keys.sort -> $server {
-        $grid.add-cell(:cell(Our::Grid::Cell.new(:text($server), :bold,                                                                                             :justification<left>)), :0col);
-        for %servers{$server}<FCS>.keys.sort -> $fcs-number {
-die $fcs-number;
-            $grid.add-cell(:cell(Our::Grid::Cell.new(:text('fcs' ~ $fcs-number),                                                                                    :justification<left>)), :1col);
-            $grid.add-cell(:cell(Our::Grid::Cell.new(:text(%servers{$server}<FCS>[$fcs-number].physical-location),                                                 :justification<left>)), :2col);
-            $grid.add-cell(:cell(Our::Grid::Cell.new(:text(%servers{$server}<FCS>[$fcs-number].world-wide-node-name),                                              :justification<left>)), :3col);
-            $grid.add-cell(:cell(Our::Grid::Cell.new(:text(%servers{$server}<FCS>[$fcs-number].world-wide-port-name),                                              :justification<left>)), :4col);
-#           for %servers{$server}<RMT>.list -> $rmt-obj {
-#               next unless $vfchost;
-#               $grid.add-cell(:cell(Our::Grid::Cell.new(:text($vfchost),                                                                                           :justification<left>)), :5col);
-#               if %HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<npiv>{$vfchost}.lpar-name {
-#                   $grid.add-cell(:cell(Our::Grid::Cell.new(:text(%HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<npiv>{$vfchost}.lpar-name),             :justification<left>)), :6col);
-#               }
-#               else {
-#                   $grid.add-cell(:cell(Our::Grid::Cell.new(:text(''),                                                                                             :justification<left>)), :7col);
-#               }
-#               $grid.add-cell(:cell(Our::Grid::Cell.new(:text(%HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<npiv>{$vfchost}.client-fcs-device),         :justification<left>)), :8col);
-#               $grid.add-cell(:cell(Our::Grid::Cell.new(:text(%HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<npiv>{$vfchost}.client-vadapter-location),  :justification<left>)), :9col);
-
-
-#               my $client-adapter-world-wide-node-name = '';
-#               my $lpar-id                             = %HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<npiv>{$vfchost}.lpar-id;
-#               my $client-adapter                      = %HMC{$hmc}<managed-servers>{$managed-server}<vios>{$vio}<npiv>{$vfchost}.client-fcs-device;
-#               my $client-adapter-number               = $client-adapter.subst('fcs');
-#               if %HMC{$hmc}<managed-servers>{$managed-server}<lpar>{$lpar-id}<fcs>[$client-adapter-number]:exists {
-#                   $client-adapter-world-wide-node-name    = %HMC{$hmc}<managed-servers>{$managed-server}<lpar>{$lpar-id}<fcs>[$client-adapter-number].world-wide-node-name;
-#               }
-#               $grid.add-cell(:cell(Our::Grid::Cell.new(:text($client-adapter-world-wide-node-name),                                                               :justification<left>)), :10col);
-#               $grid.current-row++;
-#           }
-        }
-    }
     {
-        when $text          {   $grid.TEXT-print; }
-        when $html          {   $grid.HTML-print; }
-        when $csv           {   $grid.CSV-print;  }
-        when $json          {   $grid.JSON-print; }
+        when $text          {   $grid.TEXT-print; proceed;  }
+        when $html          {   $grid.HTML-print; proceed;  }
+        when $csv           {   $grid.CSV-print;  proceed;  }
+        when $json          {   $grid.JSON-print; proceed;  }
         when $mailing       {
                                 $grid.send-proxy-mail-via-redis(
                                     :cro-host<127.0.0.1>,
@@ -424,10 +380,41 @@ die $fcs-number;
                                     :$format,
                                 );
         }
-        when $xml           {   $grid.XML-print;  }
-        when $tui           {   $grid.TUI;        }
-        when $gui           {   $grid.GUI;        }
+        when $xml           {   $grid.XML-print;  proceed;  }
+        when $tui           {   $grid.TUI;        proceed;  }
+        when $gui           {   $grid.GUI;        proceed;  }
         default             {   $grid.ANSI-print; }
+    }
+}
+
+sub by-fcs (Our::Grid:D :$grid is rw, Bool :$group-by-server) {
+    if $group-by-server {
+        $grid  .= new: :title('IBM AIX Tape Device Summary'), :$grid-proxy-host, :$reverse-highlight, :0group-by-column;
+    }
+    else {
+        $grid  .= new: :title('IBM AIX Tape Device Summary'), :$grid-proxy-host, :$reverse-highlight;
+    }
+    $grid.add-heading('Server',                                                                                                                                     :justification<left>);
+    $grid.add-heading('fcs',                                                                                                                                        :justification<left>);
+    $grid.add-heading('Physical Location',                                                                                                                          :justification<left>);
+    $grid.add-heading('WW Node Name',                                                                                                                               :justification<left>);
+    $grid.add-heading('WW Port Name',                                                                                                                               :justification<left>);
+    $grid.add-heading('Tape Drives',                                                                                                                                :justification<left>);
+    $grid.add-heading('Tape Drive Serial #',                                                                                                                        :justification<left>);
+
+    for %servers.keys.sort -> $server {
+        $grid.add-cell(:cell(Our::Grid::Cell.new(:text($server), :bold,                                                                                             :justification<left>)), :0col);
+        for %servers{$server}<FCS>.keys.sort -> $fcs-number {
+            $grid.add-cell(:cell(Our::Grid::Cell.new(:text('fcs' ~ $fcs-number),                                                                                    :justification<left>)), :1col);
+            $grid.add-cell(:cell(Our::Grid::Cell.new(:text(%servers{$server}<FCS>[$fcs-number].physical-location),                                                  :justification<left>)), :2col);
+            $grid.add-cell(:cell(Our::Grid::Cell.new(:text(%servers{$server}<FCS>[$fcs-number].world-wide-node-name),                                               :justification<left>)), :3col);
+            $grid.add-cell(:cell(Our::Grid::Cell.new(:text(%servers{$server}<FCS>[$fcs-number].world-wide-port-name),                                               :justification<left>)), :4col);
+            for %servers{$server}<RMT>.list -> $rmt-obj {
+                $grid.add-cell(:cell(Our::Grid::Cell.new(:text('rmt' ~ $rmt-obj.rmt-number),                                                                        :justification<left>)), :5col);
+                $grid.add-cell(:cell(Our::Grid::Cell.new(:text($rmt-obj.serial-number),                                                                             :justification<left>)), :6col);
+                $grid.current-row++;
+            }
+        }
     }
 }
 
