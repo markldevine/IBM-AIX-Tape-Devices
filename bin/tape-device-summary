@@ -19,7 +19,7 @@ my class FCS-Device {
     has Str             $.physical-location;
     has Str             $.world-wide-node-name;
     has Str             $.world-wide-port-name;
-    has RMT-Device      @!drives;
+    has                 @!drives;
 }
 
 grammar FCS-grammar {
@@ -71,8 +71,8 @@ my class RMT-Device {
     has Str             $.device-type;
     has Str             $.serial-number;
     has Str             $.firmware;
-    has SMC-Device      $!smc;
-    method smc (SMC-Device $smc?) {
+    has                 $!smc;
+    method smc ($smc?) {
         $!smc           = $smc  if $smc;
         return $!smc;
     }
@@ -160,12 +160,11 @@ my class SMC-Device {
     has Str             $.vport;
     has Str             $.target-WWN;
     has Str             $.target-LUN;
-    has Str             $.device-model;
-    has Str             $.device-type;
+    has Str             $.device-type-model;
     has Str             $.serial-number;
     has Str             $.firmware;
-    has RMT-Device      $!rmt;
-    method rmt (RMT-Device $rmt?) {
+    has                 $!rmt;
+    method rmt ($rmt?) {
         $!rmt           = $rmt  if $rmt;
         return $!rmt;
     }
@@ -213,9 +212,7 @@ grammar SMC-grammar {
     token target            { <target-WWN> '-' <target-LUN>         }
     token target-WWN        { W <[0..9A..F]> ** 16                  }
     token target-LUN        { L \w+                                 }
-    token drive-type-model  { <device-model> '-' <device-type>      }
-    token device-model      { \w+                                   }
-    token device-type       { \w+                                   }
+    token drive-type-model  { .+?                                $$ }
     token serial-number     { \w+                                   }
     token firmware          { \w+                                   }
 }
@@ -235,8 +232,7 @@ class SMC-actions {
             :vport(~$/<physical-location><vport>),
             :target-WWN(~$/<target><target-WWN>),
             :target-LUN(~$/<target><target-LUN>),
-            :device-model(~$/<drive-type-model><device-model>),
-            :device-type(~$/<drive-type-model><device-type>),
+            :device-type-model(~$/<drive-type-model>.trim),
             :serial-number(~$/<serial-number>),
             :firmware(~$/<firmware>),
         ;
