@@ -311,7 +311,7 @@ sub MAIN (
     %results                = Async::Command::Multi.new(:%command, :10time-out, :8batch).sow.reap;
     for %results.keys.sort -> $server {
         RMT-grammar.parse(%results{$server}.stdout-results, :actions(RMT-actions.new(:$server)));
-        die 'No rmt devices found!' unless %servers{$server}<RMT>.elems;
+        note 'No rmt devices found!' unless %servers{$server}<RMT>.elems;
     }
 
     %command                = ();
@@ -332,7 +332,7 @@ sub MAIN (
     %results                = Async::Command::Multi.new(:%command, :10time-out, :8batch).sow.reap;
     for %results.keys.sort -> $server {
         SMC-grammar.parse(%results{$server}.stdout-results, :actions(SMC-actions.new(:$server)));
-        die 'No smc devices found!' unless %servers{$server}<SMC>.elems;
+        note 'No smc devices found!' unless %servers{$server}<SMC>.elems;
     }
 
 ddt %servers;
